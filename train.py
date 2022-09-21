@@ -10,15 +10,15 @@ import torch.nn as nn
 from torch.nn import CosineSimilarity
 import MeCab
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from src.Normalizer import normalizer
 from src.Antonym import antonym
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-os.chdir("/cl/work/jungmin-c/COLIEE2021statute_data-Japanese/")
-
+OUT_DIR = '/groups/gcb50246/jungminc/'
+os.chdir("/home/ace14443ne/coliee4asqa")
 
 
 def get_questions_with_articles_jp(directory):
@@ -56,10 +56,10 @@ def get_questions_with_articles_jp(directory):
 def make_dataloader(articles, questions, labels, batch_size, shuffle):
     questions = [q.replace('、', '，') for q in questions]
 
-    input_ids = tokenizer.batch_encode_plus([art+tokenizer.eos_token+que for art, que in zip(articles, questions)], return_tensors='pt', padding=True).input_ids
-    attention_mask = tokenizer.batch_encode_plus([art+tokenizer.eos_token+que for art, que in zip(articles, questions)], return_tensors='pt', padding=True).attention_mask
+    input_ids = tokenizer.batch_encode_plus([art + que for art, que in zip(articles, questions)], return_tensors='pt', padding=True).input_ids
+    attention_mask = tokenizer.batch_encode_plus([art + que for art, que in zip(articles, questions)], return_tensors='pt', padding=True).attention_mask
 
-    labels = torch.tensor([tokenizer('はい', add_special_tokens=False).input_ids if l==1 else tokenizer('いいえ', add_special_tokens=False).input_ids for l in labels])
+    labels = torch.tensor([tokenizer('はい。').input_ids if l==1 else tokenizer('いいえ。').input_ids for l in labels])
     dataset = TensorDataset(input_ids, attention_mask, labels)
 
 
@@ -74,6 +74,7 @@ def make_dataloader(articles, questions, labels, batch_size, shuffle):
         dataloader = DataLoader(
                     dataset,  
                     batch_size = batch_size,
+                    shuffle=False
                 )
 
     return dataloader
@@ -127,64 +128,120 @@ def val_loop(dataloader, model):
 
 def test_loop(dataloader, model):
     Pred = []
+    Out = []
     Gold = []
+    Logit = []
     model.eval()
     for i, batch in enumerate(dataloader):
         with torch.no_grad():
             input_ids = batch[0].to(device)
             attention_mask = batch[1].to(device)
             labels = batch[2].to(device)
-            out = model.module.generate(input_ids, max_length=5, num_beams=5)
+            out = model.module.generate(input_ids) #this is the mode I first went for
+            logits = model(input_ids, labels=labels).logits
+            logits = logits[:,1,[7,2090]]
+
             for l in out:
                 if l[2]!=7 and l[2]!=2090:
                     print("error!")
             out = [1 if l[2]==7 else 0 for l in out]
+            pred = torch.argmax(logits, dim=1)
             labels = [1 if l[1]==7 else 0 for l in labels]
-            Pred.extend(out)
+            Out.extend(out)
+            Pred.extend(pred.tolist())
             Gold.extend(labels)
-    acc = accuracy_score(Pred, Gold)
-    print(acc)
-    return acc
+            Logit.extend(logits.tolist())
+    acc = accuracy_score(Out, Gold)
+    prec = precision_score(Out, Gold)
+    recl = recall_score(Out, Gold)
+    print(acc, prec, recl)
+    return acc, Logit, Gold, Out
 
 
 
 
-
-questions, articles, labels = get_questions_with_articles_jp("./train")
-test_questions, test_articles, test_labels = get_questions_with_articles_jp("./test")
-
-questions_indices = list(range(len(questions)))
-t_size = int(len(questions)*0.9)
-random.shuffle(questions_indices)
-t_indices, v_indices = questions_indices[:t_size], questions_indices[t_size:]
-train_questions, train_articles, train_labels = [questions[i] for i in t_indices], [articles[i] for i in t_indices], [labels[i] for i in t_indices]
-val_questions, val_articles, val_labels = [questions[i] for i in v_indices], [articles[i] for i in v_indices], [labels[i] for i in v_indices]
-
-
-
-train_questions_pos, train_articles_pos, train_labels_pos = [train_questions[i] for i in range(len(train_questions)) if train_labels[i]==1], [train_articles[i] for i in range(len(train_questions)) if train_labels[i]==1], [train_labels[i] for i in range(len(train_questions)) if train_labels[i]==1]
-val_questions_pos, val_articles_pos, val_labels_pos = [val_questions[i] for i in range(len(val_questions)) if val_labels[i]==1], [val_articles[i] for i in range(len(val_questions)) if val_labels[i]==1], [val_labels[i] for i in range(len(val_questions)) if val_labels[i]==1]
+column_names = ["label", "article", "question"]
+df = pd.read_csv('./data/train.tsv', sep='\t', names=column_names)
+train_labels, train_articles, train_questions = list(map(int, df.label.to_list())), df.article.to_list(), df.question.to_list()
+df = pd.read_csv('./data/val.tsv', sep='\t', names=column_names)
+val_labels, val_articles, val_questions = list(map(int, df.label.to_list())), df.article.to_list(), df.question.to_list()
+df = pd.read_csv('./data/test.tsv', sep='\t', names=column_names)
+test_labels, test_articles, test_questions = list(map(int, df.label.to_list())), df.article.to_list(), df.question.to_list()
+df = pd.read_csv('./data/augmentation.tsv', sep='\t', names=column_names)
+pseudo_labels, pseudo_articles, pseudo_questions = list(map(int, df.label.to_list())), df.article.to_list(), df.question.to_list()
+df = pd.read_csv('./data/tsugihagi_augmentation.tsv', sep='\t', names=column_names)
+tsugihagi_labels, tsugihagi_articles, tsugihagi_questions = list(map(int, df.label.to_list())), df.article.to_list(), df.question.to_list()
 
 pretrained_name = "sonoisa/t5-base-japanese"
 tokenizer = T5Tokenizer.from_pretrained(pretrained_name)
-model = T5ForConditionalGeneration.from_pretrained(pretrained_name, output_hidden_states=True)
-model = model.to(device)
-model = nn.DataParallel(model)
 
-len_truncate = 8
-batch_size = 32
+indices = list(range(len(pseudo_labels)))
+random.shuffle(indices)
+pseudo_val_labels = [pseudo_labels[i] for i in indices[:int(len(indices)*0.1)]]
+pseudo_val_questions = [pseudo_questions[i] for i in indices[:int(len(indices)*0.1)]]
+pseudo_val_articles = [pseudo_articles[i] for i in indices[:int(len(indices)*0.1)]]
+
+pseudo_train_labels = [pseudo_labels[i] for i in indices[int(len(indices)*0.1):]]
+pseudo_train_questions = [pseudo_questions[i] for i in indices[int(len(indices)*0.1):]]
+pseudo_train_articles = [pseudo_articles[i] for i in indices[int(len(indices)*0.1):]]
+
+train_labels += pseudo_train_labels
+train_articles += pseudo_train_articles
+train_questions += pseudo_train_questions
+
+val_labels += pseudo_val_labels
+val_articles += pseudo_val_articles
+val_questions += pseudo_val_questions
+
+# train_labels += pseudo_labels
+# train_articles += pseudo_articles
+# train_questions += pseudo_questions
+
+pretrained_name = "sonoisa/t5-base-japanese"
+tokenizer = T5Tokenizer.from_pretrained(pretrained_name)
+
+softmax = nn.Softmax(dim=-1)
+batch_size = 64
 train_dataloader = make_dataloader(train_articles, train_questions, train_labels, batch_size, shuffle=True)
 val_dataloader = make_dataloader(val_articles, val_questions, val_labels, batch_size, shuffle=False)
 test_dataloader = make_dataloader(test_articles, test_questions, test_labels, batch_size, shuffle=False)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-best_loss = 1e+6
-for epoch in range(20):
-    train_loop(train_dataloader, model)
-    val_loss = val_loop(val_dataloader, model)
-    if val_loss < best_loss:
-        torch.save(model.state_dict(), "coliee4asqa_wo_tsugihagi")
-        best_loss = val_loss
+df = pd.read_csv('./data/val.tsv', sep='\t', names=column_names)
+val_labels, val_articles, val_questions = list(map(int, df.label.to_list())), df.article.to_list(), df.question.to_list()
+orig_val_dataloader = make_dataloader(val_articles, val_questions, val_labels, batch_size, shuffle=False)
+acc, prec, recl = [], [], []
+for i in range(10):
+    model = T5ForConditionalGeneration.from_pretrained(pretrained_name, output_hidden_states=True)
+    model = model.to(device)
+    model = nn.DataParallel(model)
+    early_stop = 5
+    count = 0
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    best_loss = 1e+6
+    for epoch in range(30):
+        train_loop(train_dataloader, model)
+        val_loss = val_loop(val_dataloader, model)
+        if val_loss < best_loss:
+            torch.save(model.state_dict(), OUT_DIR + "t5base_{}".format(i+1))
+            best_loss = val_loss
+            count = 0
+        else:
+            count += 1
+            if count == early_stop:
+                break
 
-model.load_state_dict(torch.load('coliee4asqa_wo_tsugihagi'))
-acc = test_loop(test_dataloader, model)
+    model.load_state_dict(torch.load(OUT_DIR + 't5base_{}'.format(i+1)))
+    print("below test")
+    _, Test_Logit, Test_Gold, Test_Out = test_loop(test_dataloader, model)
+    _, Val_Logit, Val_Gold, Val_Out = test_loop(orig_val_dataloader, model)
+    acc.append(accuracy_score(Test_Out, test_labels))
+    prec.append(precision_score(Test_Out, test_labels))
+    recl.append(recall_score(Test_Out, test_labels))
+    torch.save((Val_Logit, Test_Logit), OUT_DIR + 'Logit_t5base_{}'.format(i+1))
+print("acc")
+print(torch.std_mean(torch.tensor(acc)))
+print("prec")
+print(torch.std_mean(torch.tensor(prec)))
+print("recl")
+print(torch.std_mean(torch.tensor(recl)))
 
+    
