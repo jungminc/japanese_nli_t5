@@ -137,10 +137,10 @@ def test_loop(dataloader, model):
             input_ids = batch[0].to(device)
             attention_mask = batch[1].to(device)
             labels = batch[2].to(device)
-            out = model.module.generate(input_ids) #this is the mode I first went for
+            out = model.module.generate(input_ids) 
             logits = model(input_ids, labels=labels).logits
             logits = logits[:,1,[7,2090]]
-
+            logits = torch.nn.functional.log_softmax(logits, dim=2)
             for l in out:
                 if l[2]!=7 and l[2]!=2090:
                     print("error!")
