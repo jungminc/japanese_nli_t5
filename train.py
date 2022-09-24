@@ -141,11 +141,11 @@ def test_loop(dataloader, model):
             logits = model(input_ids, labels=labels).logits
             logits = logits[:,1,[7,2090]] #7 corresponds with は, 2090 with いい
             logits = torch.nn.functional.log_softmax(logits, dim=2)
-            for l in out:
+            for l in out: # make sure l[2] is either 7 or 2090
                 if l[2]!=7 and l[2]!=2090:
                     print("error!")
-            out = [1 if l[2]==7 else 0 for l in out]
-            pred = torch.argmax(logits, dim=1)
+            out = [1 if l[2]==7 else 0 for l in out] #this prediction yields accuracy of 0.59
+            pred = torch.argmax(logits, dim=1) #this prediction yields accuracy of 0.5
             labels = [1 if l[1]==7 else 0 for l in labels]
             Out.extend(out)
             Pred.extend(pred.tolist())
