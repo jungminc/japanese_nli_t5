@@ -139,7 +139,7 @@ def test_loop(dataloader, model):
             labels = batch[2].to(device)
             out = model.module.generate(input_ids) 
             logits = model(input_ids, labels=labels).logits
-            logits = logits[:,1,[7,2090]]
+            logits = logits[:,1,[7,2090]] #7 corresponds with は, 2090 with いい
             logits = torch.nn.functional.log_softmax(logits, dim=2)
             for l in out:
                 if l[2]!=7 and l[2]!=2090:
